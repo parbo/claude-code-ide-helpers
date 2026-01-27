@@ -12,11 +12,11 @@ Emacs extensions for [claude-code-ide](https://github.com/manzaltu/claude-code-i
 
 ## Installation
 
-With `use-package` and a local path:
+With `use-package` and `:vc` (Emacs 29+):
 
 ```elisp
 (use-package claude-code-ide-helpers
-  :load-path "~/src/claude-code-ide-helpers"
+  :vc (:url "https://github.com/parbo/claude-code-ide-helpers" :rev :newest)
   :demand t
   :bind (("C-c a l" . claude-code-ide-helpers-arrange-windows)
          ("C-c a n" . claude-code-ide-helpers-cycle-main)
