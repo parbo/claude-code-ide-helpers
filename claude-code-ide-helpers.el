@@ -57,8 +57,8 @@
 (defun claude-code-ide-helpers--modeline-indicator ()
   "Return a modeline string indicating Claude status."
   (pcase claude-code-ide-helpers--status
-    ('ready (propertize " [Ready]" 'face '(:foreground "green" :weight bold)))
-    ('working (propertize " [Working...]" 'face '(:foreground "orange")))
+    ('ready (propertize " ✓" 'face '(:foreground "green")))
+    ('working (propertize " ✱" 'face '(:foreground "orange")))
     (_ "")))
 
 (defun claude-code-ide-helpers--check-status ()
