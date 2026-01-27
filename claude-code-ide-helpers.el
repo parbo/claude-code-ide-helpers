@@ -49,7 +49,7 @@
 (defvar-local claude-code-ide-helpers--last-point-max nil
   "Last known point-max, used to detect new output.")
 
-(defcustom claude-code-ide-helpers-idle-threshold 2.0
+(defcustom claude-code-ide-helpers-idle-threshold 5.0
   "Seconds of no output before considering Claude ready."
   :type 'number
   :group 'claude-code-ide-helpers)
