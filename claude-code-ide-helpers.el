@@ -26,6 +26,8 @@
 
 ;;; Code:
 
+(require 'cl-lib)
+
 (defgroup claude-code-ide-helpers nil
   "Helpers for claude-code-ide."
   :group 'tools
@@ -34,7 +36,7 @@
 (defun claude-code-ide-helpers-get-buffers ()
   "Get all Claude Code IDE buffers."
   (seq-filter (lambda (buf)
-                (string-match-p "\\*claude-code:" (buffer-name buf)))
+                (string-match-p "\\*claude-code\\[" (buffer-name buf)))
               (buffer-list)))
 
 ;; Modeline indicator for Claude buffer status
@@ -62,7 +64,7 @@
 (defun claude-code-ide-helpers--check-status ()
   "Check and update Claude buffer status based on output activity."
   (when (and (bound-and-true-p claude-code-ide-helpers-status-mode)
-             (string-match-p "\\*claude-code:" (buffer-name)))
+             (string-match-p "\\*claude-code\\[" (buffer-name)))
     (let ((current-max (point-max)))
       (if (not (equal current-max claude-code-ide-helpers--last-point-max))
           ;; New output detected
@@ -90,7 +92,7 @@
 
 (define-minor-mode claude-code-ide-helpers-status-mode
   "Minor mode to show Claude status in modeline."
-  :lighter (:eval (claude-code-ide-helpers--modeline-indicator))
+  :lighter nil
   (if claude-code-ide-helpers-status-mode
       (progn
         (setq claude-code-ide-helpers--last-point-max (point-max))
@@ -110,8 +112,16 @@
 
 (defun claude-code-ide-helpers-enable-status-mode ()
   "Enable status mode for Claude buffers."
-  (when (string-match-p "\\*claude-code:" (buffer-name))
+  (when (string-match-p "\\*claude-code\\[" (buffer-name))
     (claude-code-ide-helpers-status-mode 1)))
+
+(defun claude-code-ide-helpers-enable-status-mode-all ()
+  "Enable status mode for all existing Claude buffers."
+  (interactive)
+  (dolist (buf (claude-code-ide-helpers-get-buffers))
+    (with-current-buffer buf
+      (unless claude-code-ide-helpers-status-mode
+        (claude-code-ide-helpers-status-mode 1)))))
 
 (defun claude-code-ide-helpers--buffer-waiting-p (buf)
   "Check if Claude buffer BUF appears to be waiting for input."
@@ -148,43 +158,132 @@ Layout:
                   (lambda (a b)
                     (and (claude-code-ide-helpers--buffer-waiting-p a)
                          (not (claude-code-ide-helpers--buffer-waiting-p b))))))
-      (delete-other-windows)
-      (let* ((main-buf (car claude-buffers))
-             (side-bufs (cdr claude-buffers)))
-        (switch-to-buffer main-buf)
-        (when side-bufs
-          (let ((side-window (split-window-right (floor (* 0.75 (frame-width))))))
-            (select-window side-window)
-            (switch-to-buffer (car side-bufs))
-            (dolist (buf (cdr side-bufs))
-              (let ((new-win (split-window-below)))
-                (select-window new-win)
-                (switch-to-buffer buf)))
-            (balance-windows side-window)))
-        (select-window (get-buffer-window main-buf))
-        (message "Arranged %d Claude buffer(s). Main: %s"
-                 (length claude-buffers) (buffer-name main-buf))))))
+      (claude-code-ide-helpers--apply-layout (car claude-buffers) (cdr claude-buffers)))))
+
+(defvar claude-code-ide-helpers--main-buffer nil
+  "The current main Claude buffer for cycling.")
+
+(defun claude-code-ide-helpers--apply-layout (main-buf side-bufs)
+  "Apply the Claude window layout with MAIN-BUF as main and SIDE-BUFS stacked on right."
+  (setq claude-code-ide-helpers--main-buffer main-buf)
+  (delete-other-windows)
+  (switch-to-buffer main-buf)
+  (when side-bufs
+    (let ((side-window (split-window-right (floor (* 0.75 (frame-width))))))
+      (select-window side-window)
+      (switch-to-buffer (car side-bufs))
+      (dolist (buf (cdr side-bufs))
+        (let ((new-win (split-window-below)))
+          (select-window new-win)
+          (switch-to-buffer buf)))
+      (balance-windows side-window)))
+  (select-window (get-buffer-window main-buf))
+  (message "Main: %s" (buffer-name main-buf)))
+
+(defun claude-code-ide-helpers--buffer-project-name (buf)
+  "Extract project name from Claude buffer BUF name."
+  (let ((name (buffer-name buf)))
+    (if (string-match "\\*claude-code\\[\\([^]]+\\)\\]\\*" name)
+        (match-string 1 name)
+      name)))
+
+;;;###autoload
+(defun claude-code-ide-helpers-switch-main ()
+  "Switch main Claude buffer using completing-read.
+Integrates with vertico, ivy, etc. for fuzzy matching."
+  (interactive)
+  (let* ((claude-buffers (claude-code-ide-helpers-get-buffers))
+         (buf-alist (mapcar (lambda (buf)
+                              (cons (claude-code-ide-helpers--buffer-project-name buf) buf))
+                            claude-buffers)))
+    (if (null claude-buffers)
+        (message "No Claude Code buffers found")
+      (let* ((choice (completing-read "Claude project: " buf-alist nil t))
+             (selected-buf (cdr (assoc choice buf-alist))))
+        (when selected-buf
+          (claude-code-ide-helpers--apply-layout
+           selected-buf
+           (cl-remove selected-buf claude-buffers)))))))
 
 ;;;###autoload
 (defun claude-code-ide-helpers-cycle-main ()
   "Cycle which Claude buffer is the main (large) window."
   (interactive)
-  (let ((claude-buffers (claude-code-ide-helpers-get-buffers)))
-    (when (> (length claude-buffers) 1)
-      (let ((current-main (car claude-buffers)))
-        (setq claude-buffers (append (cdr claude-buffers) (list current-main))))
-      (delete-other-windows)
-      (switch-to-buffer (car claude-buffers))
-      (when (cdr claude-buffers)
-        (let ((side-window (split-window-right (floor (* 0.75 (frame-width))))))
-          (select-window side-window)
-          (switch-to-buffer (cadr claude-buffers))
-          (dolist (buf (cddr claude-buffers))
-            (let ((new-win (split-window-below)))
-              (select-window new-win)
-              (switch-to-buffer buf)))
-          (balance-windows side-window)))
-      (select-window (frame-first-window)))))
+  (let* ((claude-buffers (claude-code-ide-helpers-get-buffers))
+         (num-buffers (length claude-buffers)))
+    (when (> num-buffers 1)
+      ;; Find current main in the list and get next one
+      (let* ((current-pos (or (cl-position claude-code-ide-helpers--main-buffer
+                                           claude-buffers)
+                              0))
+             (next-pos (mod (1+ current-pos) num-buffers))
+             (new-main (nth next-pos claude-buffers)))
+        (claude-code-ide-helpers--apply-layout
+         new-main
+         (cl-remove new-main claude-buffers))))))
+
+;;; Session persistence
+
+(defcustom claude-code-ide-helpers-session-file
+  (expand-file-name "claude-sessions" user-emacs-directory)
+  "File to store active Claude session directories."
+  :type 'file
+  :group 'claude-code-ide-helpers)
+
+(defun claude-code-ide-helpers--get-session-directories ()
+  "Get list of directories for all active Claude sessions."
+  (cl-remove-duplicates
+   (mapcar (lambda (buf)
+             (with-current-buffer buf
+               (expand-file-name default-directory)))
+           (claude-code-ide-helpers-get-buffers))
+   :test #'string=))
+
+(defun claude-code-ide-helpers-save-sessions ()
+  "Save active Claude session directories to file."
+  (let ((dirs (claude-code-ide-helpers--get-session-directories)))
+    (when dirs
+      (with-temp-file claude-code-ide-helpers-session-file
+        (prin1 dirs (current-buffer))))))
+
+(defun claude-code-ide-helpers--load-saved-sessions ()
+  "Load saved session directories from file."
+  (when (file-exists-p claude-code-ide-helpers-session-file)
+    (with-temp-buffer
+      (insert-file-contents claude-code-ide-helpers-session-file)
+      (goto-char (point-min))
+      (ignore-errors (read (current-buffer))))))
+
+;;;###autoload
+(defun claude-code-ide-helpers-restore-sessions ()
+  "Restore Claude sessions from last Emacs session.
+Shows a selection UI to choose which sessions to restore."
+  (interactive)
+  (let ((saved-dirs (claude-code-ide-helpers--load-saved-sessions)))
+    (if (null saved-dirs)
+        (message "No saved Claude sessions found")
+      ;; Filter to only existing directories
+      (setq saved-dirs (cl-remove-if-not #'file-directory-p saved-dirs))
+      (if (null saved-dirs)
+          (message "No valid session directories found")
+        ;; Use completing-read-multiple for selection
+        (let* ((options (cons "[All]" saved-dirs))
+               (choices (completing-read-multiple
+                         "Restore sessions (comma-separated): "
+                         options nil t))
+               (to-restore (if (member "[All]" choices)
+                               saved-dirs
+                             choices)))
+          (if (null to-restore)
+              (message "No sessions selected")
+            (dolist (dir to-restore)
+              (let ((default-directory dir))
+                (when (fboundp 'claude-code-ide-resume)
+                  (claude-code-ide-resume))))
+            (message "Restored %d session(s)" (length to-restore))))))))
+
+;; Save sessions on Emacs exit
+(add-hook 'kill-emacs-hook #'claude-code-ide-helpers-save-sessions)
 
 (provide 'claude-code-ide-helpers)
 ;;; claude-code-ide-helpers.el ends here
