@@ -139,7 +139,7 @@
 
 ;;;###autoload
 (defun claude-code-ide-helpers-arrange-windows ()
-  "Arrange Claude buffers with one main window and smaller ones stacked on the right.
+  "Arrange Claude buffers with main window and stacked side windows.
 Layout:
 ---------------------------
 |                  |      |
@@ -164,7 +164,7 @@ Layout:
   "The current main Claude buffer for cycling.")
 
 (defun claude-code-ide-helpers--apply-layout (main-buf side-bufs)
-  "Apply the Claude window layout with MAIN-BUF as main and SIDE-BUFS stacked on right."
+  "Apply Claude window layout with MAIN-BUF as main and SIDE-BUFS on right."
   (setq claude-code-ide-helpers--main-buffer main-buf)
   (delete-other-windows)
   (switch-to-buffer main-buf)
