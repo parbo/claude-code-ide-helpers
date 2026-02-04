@@ -54,6 +54,14 @@
   :type 'number
   :group 'claude-code-ide-helpers)
 
+(defcustom claude-code-ide-helpers-side-window-width 80
+  "Width of the right-hand side window in the Claude layout.
+If an integer, specifies the width in characters.
+If a float between 0 and 1, specifies the fraction of frame width."
+  :type '(choice (integer :tag "Width in characters")
+                 (float :tag "Fraction of frame width (0.0-1.0)"))
+  :group 'claude-code-ide-helpers)
+
 (defun claude-code-ide-helpers--modeline-indicator ()
   "Return a modeline string indicating Claude status."
   (pcase claude-code-ide-helpers--status
@@ -163,13 +171,24 @@ Layout:
 (defvar claude-code-ide-helpers--main-buffer nil
   "The current main Claude buffer for cycling.")
 
+(defun claude-code-ide-helpers--calculate-main-width ()
+  "Calculate the main window width based on side window configuration."
+  (let ((side-width claude-code-ide-helpers-side-window-width)
+        (frame-w (frame-width)))
+    (if (floatp side-width)
+        ;; Percentage: side-width is fraction for the side, main gets the rest
+        (floor (* (- 1.0 side-width) frame-w))
+      ;; Character width: subtract from frame width
+      (max 20 (- frame-w side-width)))))
+
 (defun claude-code-ide-helpers--apply-layout (main-buf side-bufs)
   "Apply Claude window layout with MAIN-BUF as main and SIDE-BUFS on right."
   (setq claude-code-ide-helpers--main-buffer main-buf)
   (delete-other-windows)
   (switch-to-buffer main-buf)
   (when side-bufs
-    (let ((side-window (split-window-right (floor (* 0.75 (frame-width))))))
+    (let ((side-window (split-window-right
+                        (claude-code-ide-helpers--calculate-main-width))))
       (select-window side-window)
       (switch-to-buffer (car side-bufs))
       (dolist (buf (cdr side-bufs))

@@ -59,6 +59,11 @@ The modeline indicator shows:
 ## Customization
 
 ```elisp
+;; Width of the right-hand side window (default: 80 characters)
+;; Can be an integer (character width) or a float (fraction of frame)
+(setq claude-code-ide-helpers-side-window-width 80)    ; 80 characters
+(setq claude-code-ide-helpers-side-window-width 0.25)  ; 25% of frame
+
 ;; Seconds of no output before showing ready (default: 5.0)
 (setq claude-code-ide-helpers-idle-threshold 5.0)
 
