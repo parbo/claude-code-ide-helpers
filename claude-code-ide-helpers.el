@@ -15,10 +15,14 @@
 ;;   - Window layout with one main buffer and smaller stacked side buffers
 ;;   - Modeline indicator showing [Ready] or [Working...] status
 ;;   - Commands to arrange and cycle through Claude buffers
+;;   - Simple diff-mode viewer as a lightweight alternative to ediff
 ;;
 ;; Usage:
 ;;   (require 'claude-code-ide-helpers)
 ;;   (add-hook 'vterm-mode-hook #'claude-code-ide-helpers-enable-status-mode)
+;;
+;; To use the simple diff viewer instead of ediff:
+;;   (claude-code-ide-helpers-simple-diff-mode 1)
 ;;
 ;; Keybindings (suggested):
 ;;   C-c C-l  - claude-code-ide-helpers-arrange-windows
@@ -27,6 +31,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'diff)
 
 (defgroup claude-code-ide-helpers nil
   "Helpers for claude-code-ide."
@@ -303,6 +308,150 @@ Shows a selection UI to choose which sessions to restore."
 
 ;; Save sessions on Emacs exit
 (add-hook 'kill-emacs-hook #'claude-code-ide-helpers-save-sessions)
+
+;;; Simple diff viewer (alternative to ediff)
+
+(declare-function claude-code-ide-mcp-complete-deferred "claude-code-ide-mcp"
+  (session method result &optional unique-key))
+(declare-function claude-code-ide-mcp--find-session-for-file "claude-code-ide-mcp-handlers"
+  (file-path))
+(declare-function claude-code-ide-mcp--get-current-session "claude-code-ide-mcp" ())
+(declare-function claude-code-ide-mcp--get-active-diffs "claude-code-ide-mcp-handlers"
+  (&optional session))
+(declare-function claude-code-ide-mcp--cleanup-diff "claude-code-ide-mcp-handlers"
+  (tab-name &optional session))
+(declare-function claude-code-ide--display-buffer-in-side-window "claude-code-ide"
+  (buffer))
+(declare-function claude-code-ide--get-buffer-name "claude-code-ide"
+  (&optional directory))
+(defvar claude-code-ide-mcp--sessions)
+
+(defvar-local claude-code-ide-helpers--diff-tab-name nil)
+(defvar-local claude-code-ide-helpers--diff-session nil)
+(defvar-local claude-code-ide-helpers--diff-new-contents nil)
+(defvar-local claude-code-ide-helpers--diff-old-file nil)
+
+(defvar claude-code-ide-helpers-simple-diff-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-c") #'claude-code-ide-helpers-diff-accept)
+    (define-key map (kbd "C-c C-k") #'claude-code-ide-helpers-diff-reject)
+    (define-key map (kbd "q") #'claude-code-ide-helpers-diff-reject)
+    map))
+
+(defun claude-code-ide-helpers--generate-unified-diff (old-file new-contents)
+  "Generate a unified diff between OLD-FILE and NEW-CONTENTS."
+  (let ((new-file (make-temp-file "claude-diff-new")))
+    (unwind-protect
+        (progn
+          (with-temp-file new-file
+            (insert new-contents))
+          (let ((old (if (file-exists-p old-file) old-file "/dev/null")))
+            (with-temp-buffer
+              (call-process "diff" nil t nil "-u"
+                            "--label" (file-name-nondirectory old-file)
+                            "--label" (file-name-nondirectory old-file)
+                            old new-file)
+              (buffer-string))))
+      (delete-file new-file))))
+
+(defun claude-code-ide-helpers--show-simple-diff (arguments)
+  "Show diff in a `diff-mode' buffer instead of ediff.
+ARGUMENTS is the openDiff MCP tool arguments alist."
+  (let* ((old-file-path (alist-get 'old_file_path arguments))
+         (new-file-contents (alist-get 'new_file_contents arguments))
+         (tab-name (alist-get 'tab_name arguments))
+         (session (or (claude-code-ide-mcp--find-session-for-file old-file-path)
+                      (claude-code-ide-mcp--get-current-session))))
+    (unless (and old-file-path new-file-contents tab-name)
+      (signal 'mcp-error '("Missing required parameters for openDiff")))
+    (unless session
+      (signal 'mcp-error '("No active MCP session found")))
+    ;; Clean up any existing diff with this tab name
+    (let ((active-diffs (claude-code-ide-mcp--get-active-diffs session)))
+      (when (gethash tab-name active-diffs)
+        (claude-code-ide-mcp--cleanup-diff tab-name session)))
+    (let* ((diff-output (claude-code-ide-helpers--generate-unified-diff
+                         old-file-path new-file-contents))
+           (buf-name (format "*Diff: %s*" (file-name-nondirectory old-file-path)))
+           (diff-buf (get-buffer-create buf-name)))
+      (with-current-buffer diff-buf
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert diff-output)
+          (if (string-empty-p (string-trim diff-output))
+              (insert "(no changes)\n")
+            (diff-mode)))
+        (goto-char (point-min))
+        (setq buffer-read-only t)
+        (use-local-map (make-composed-keymap
+                        claude-code-ide-helpers-simple-diff-map
+                        (current-local-map)))
+        (setq-local claude-code-ide-helpers--diff-tab-name tab-name)
+        (setq-local claude-code-ide-helpers--diff-session session)
+        (setq-local claude-code-ide-helpers--diff-new-contents new-file-contents)
+        (setq-local claude-code-ide-helpers--diff-old-file old-file-path)
+        (setq-local header-line-format
+                     (substitute-command-keys
+                      "Diff: \\[claude-code-ide-helpers-diff-accept] accept  \
+\\[claude-code-ide-helpers-diff-reject] reject")))
+      ;; Store in active-diffs so close_tab can find it
+      (let ((active-diffs (claude-code-ide-mcp--get-active-diffs session)))
+        (puthash tab-name
+                 `((diff-buffer . ,diff-buf)
+                   (old-file-path . ,old-file-path)
+                   (session . ,session)
+                   (created-at . ,(current-time)))
+                 active-diffs))
+      (display-buffer diff-buf '(display-buffer-use-some-window))
+      `((deferred . t)
+        (unique-key . ,tab-name)
+        (session . ,session)))))
+
+(defun claude-code-ide-helpers-diff-accept ()
+  "Accept the proposed changes."
+  (interactive)
+  (let ((tab-name claude-code-ide-helpers--diff-tab-name)
+        (session claude-code-ide-helpers--diff-session)
+        (new-contents claude-code-ide-helpers--diff-new-contents)
+        (buf (current-buffer)))
+    (claude-code-ide-mcp-complete-deferred
+     session "openDiff"
+     (list `((type . "text") (text . "FILE_SAVED"))
+           `((type . "text") (text . ,new-contents)))
+     tab-name)
+    (let ((active-diffs (claude-code-ide-mcp--get-active-diffs session)))
+      (when active-diffs
+        (remhash tab-name active-diffs)))
+    (quit-window t (get-buffer-window buf))))
+
+(defun claude-code-ide-helpers-diff-reject ()
+  "Reject the proposed changes."
+  (interactive)
+  (let ((tab-name claude-code-ide-helpers--diff-tab-name)
+        (session claude-code-ide-helpers--diff-session)
+        (buf (current-buffer)))
+    (claude-code-ide-mcp-complete-deferred
+     session "openDiff"
+     (list `((type . "text") (text . "DIFF_REJECTED"))
+           `((type . "text") (text . ,tab-name)))
+     tab-name)
+    (let ((active-diffs (claude-code-ide-mcp--get-active-diffs session)))
+      (when active-diffs
+        (remhash tab-name active-diffs)))
+    (quit-window t (get-buffer-window buf))))
+
+;;;###autoload
+(define-minor-mode claude-code-ide-helpers-simple-diff-mode
+  "Use a simple diff-mode buffer instead of ediff for Claude diffs.
+When enabled, overrides the openDiff MCP handler to show a unified
+diff in a regular buffer with accept/reject keybindings."
+  :global t
+  :group 'claude-code-ide-helpers
+  (if claude-code-ide-helpers-simple-diff-mode
+      (advice-add 'claude-code-ide-mcp-handle-open-diff :override
+                  #'claude-code-ide-helpers--show-simple-diff)
+    (advice-remove 'claude-code-ide-mcp-handle-open-diff
+                   #'claude-code-ide-helpers--show-simple-diff)))
 
 (provide 'claude-code-ide-helpers)
 ;;; claude-code-ide-helpers.el ends here
